@@ -157,7 +157,7 @@ set(bc_flags -S -x c++ -O1 -std=c++14
              -Xclang -emit-llvm-bc
              -Xclang -aux-triple -Xclang ${aux_triple}
              -fopenmp -fopenmp-cuda-mode -Xclang -fopenmp-is-device
-             -Xclang -target-feature -Xclang +ptx61
+	     -Xclang -target-feature -Xclang +ptx70
              -D__CUDACC__
              -I${devicertl_base_directory}
              -I${devicertl_common_directory}/include
