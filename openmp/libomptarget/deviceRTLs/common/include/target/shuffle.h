@@ -24,6 +24,7 @@
 ///{
 
 extern "C" {
+int64_t __kmpc_shuffle_idx_int64(uint32_t mask, int64_t val, int32_t SrcLane);
 int32_t __kmpc_shuffle_int32(int32_t val, int16_t delta, int16_t size);
 int64_t __kmpc_shuffle_int64(int64_t val, int16_t delta, int16_t size);
 }
