@@ -39,14 +39,6 @@ INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data,
   for(int32_t i = 0; i < 1000; i++) {
     reduce[i] = __nvvm_redux_sync_add(1, size);
   }
-  /*
-  if (tid == 0) remoteAddr = (int64_t)local;
-  remoteAddr = __kmpc_shuffle_idx_int64(size, remoteAddr, 0);
-  int32_t *remote = (int32_t *)remoteAddr;
-  for (int32_t i = 0; i < 1000; i++) {
-    remote[i] = __nvvm_redux_sync_add(local[i], size);
-  }
-  */
 }
 #pragma omp end declare variant
 
@@ -55,10 +47,7 @@ INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, uint32_t tid) {
   int32_t *local = *(int32_t **)reduce_data;
   for (uint32_t mask = WARPSIZE / 2; mask > 0; mask /= 2) {
     for (int32_t i = 0; i < 1000; i++) {
-      remote[i] = __kmpc_shuffle_int32(local[i], mask, WARPSIZE);
-    }
-    for (int32_t i = 0; i < 1000; i++) {
-      local[i] += remote[i];
+      local[i] += __kmpc_shuffle_int32(local[i], mask, WARPSIZE);
     }
   }
 }
@@ -74,10 +63,7 @@ INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data,
   mask = curr_size / 2;
   while (mask > 0) {
     for (int32_t i = 0; i < 1000; i++) {
-      remote[i] = __kmpc_shuffle_int64(local[i], mask, size);
-    }
-    for (int32_t i = 0; i < 1000; i++) {
-      local[i] += remote[i];
+      local[i] += __kmpc_shuffle_int64(local[i], mask, size);
     }
 
     curr_size = (curr_size + 1) / 2;
@@ -158,14 +144,10 @@ static int32_t nvptx_parallel_reduce_nowait(
                                  /*LaneCount=*/NumThreads % WARPSIZE,
                                  GetThreadIdInBlock() % WARPSIZE);
 
-  if (NumThreads > WARPSIZE) {
-    cpyFct(reduce_data, WarpsNeeded);
-
-    if (WarpId == 0)
-      gpu_irregular_warp_reduce_v2(reduce_data,
-                                   WarpsNeeded,
-                                   BlockThreadId);
-  }
+  if (NumThreads > WARPSIZE && WarpId == 0)
+    gpu_irregular_warp_reduce_v2(reduce_data,
+                                 WarpsNeeded,
+                                 BlockThreadId);
   return BlockThreadId == 0;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
   uint32_t WarpsNeeded = (NumThreads + WARPSIZE - 1) / WARPSIZE;
