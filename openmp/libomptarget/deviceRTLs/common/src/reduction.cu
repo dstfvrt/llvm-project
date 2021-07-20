@@ -31,6 +31,7 @@ INLINE static void cpyReduceData(void *reduce_data, int32_t *fromData) {
   }
 }
 
+#pragma omp begin declare variant match(device={isa(sm_80)}, implementation = {extension(match_any)})
 INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, int32_t *reduce_loc,
                                               uint32_t tid) {
   int32_t *local = *(int32_t **)reduce_data;
@@ -57,6 +58,22 @@ INLINE static void gpu_master_warp_reduce_v2(int32_t *reduce_data, uint32_t size
     reduce_data[i] = __nvvm_redux_sync_add(reduce_elem[i], size);
   }
 } 
+#pragma omp end declare variant
+
+INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, int32_t *reduce_loc,
+                                              uint32_t tid) {
+  ;
+}
+
+INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data, int32_t *reduce_loc,
+                                                uint32_t size, uint32_t tid) {
+  ;
+}
+
+INLINE static void gpu_master_warp_reduce_v2(int32_t *reduce_data, uint32_t size,
+                                             uint32_t tid) {
+  ;
+}
 
 INLINE static void gpu_regular_warp_reduce(void *reduce_data,
                                            kmp_ShuffleReductFctPtr shflFct) {
@@ -101,6 +118,10 @@ gpu_irregular_simd_reduce(void *reduce_data, kmp_ShuffleReductFctPtr shflFct) {
 }
 #endif
 
+// shared reduction heap
+[[clang::loader_uninitialized]] int32_t reduce[N * 32];
+#pragma omp allocate(reduce) allocator(omp_pteam_mem_alloc)
+
 INLINE
 static int32_t nvptx_parallel_reduce_nowait(
     int32_t global_tid, int32_t num_vars, size_t reduce_size, void *reduce_data,
@@ -124,17 +145,14 @@ static int32_t nvptx_parallel_reduce_nowait(
   uint32_t WarpsNeeded = (NumThreads + WARPSIZE - 1) / WARPSIZE;
   uint32_t WarpId = BlockThreadId / WARPSIZE;
 
-  // shared reduction heap
-  [[clang::loader_uninitialized]] uint32_t reduce[N * WarpsNeeded];
-  #pragma omp allocate(parallelLevel) allocator(omp_pteam_mem_alloc)
   // pointer to each warp's segment of the reduction heap
-  uint32_t *reduce_loc = &reduce[WarpId * N];
+  int32_t *reduce_loc = &reduce[WarpId * N];
 
   if ((NumThreads % WARPSIZE == 0) || (WarpId < WarpsNeeded - 1))
-    gpu_regular_warp_reduce_v2(reduce_data, reduc_loc,
+    gpu_regular_warp_reduce_v2(reduce_data, reduce_loc,
                                GetThreadIdInBlock() % WARPSIZE);
   else if (NumThreads > 1) // Only SPMD execution mode comes thru this case.
-    gpu_irregular_warp_reduce_v2(reduce_data, reduc_loc,
+    gpu_irregular_warp_reduce_v2(reduce_data, reduce_loc,
                                  /*LaneCount=*/NumThreads % WARPSIZE,
                                  GetThreadIdInBlock() % WARPSIZE);
 
