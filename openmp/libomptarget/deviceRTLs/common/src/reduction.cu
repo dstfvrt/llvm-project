@@ -15,61 +15,48 @@
 #include "target/shuffle.h"
 #include "target_impl.h"
 
+#define N 1000
+
 EXTERN
 void __kmpc_nvptx_end_reduce(int32_t global_tid) {}
 
 EXTERN
 void __kmpc_nvptx_end_reduce_nowait(int32_t global_tid) {}
 
-#pragma omp begin declare variant match(device={isa(sm_80)}, implementation = {extension(match_any)})
-INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, uint32_t tid) {
-  int32_t reduce[1000];
-  int32_t *local = *(int32_t **)reduce_data;
+INLINE static void cpyReduceData(void *reduce_data, int32_t *fromData) {
+  int32_t *toData = *(int32_t **)reduce_data;
 
-  for(int32_t i = 0; i < 1000; i++) {
-    reduce[i] = __nvvm_redux_sync_add(1, 0xFF);
+  for (int32_t i = 0; i < N; i++) {
+    toData[i] = fromData[i];
   }
 }
 
-INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data,
+INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, int32_t *reduce_loc,
+                                              uint32_t tid) {
+  int32_t *local = *(int32_t **)reduce_data;
+
+  for(int32_t i = 0; i < N; i++) {
+    reduc_loc[i] = __nvvm_redux_sync_add(local[i], size);
+  }
+}
+
+INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data, int32_t *reduc_loc,
                                                 uint32_t size, uint32_t tid) {
-  int64_t reduce[1000];
   int32_t *local = *(int32_t **)reduce_data;
 
-  for(int32_t i = 0; i < 1000; i++) {
-    reduce[i] = __nvvm_redux_sync_add(1, size);
-  }
-}
-#pragma omp end declare variant
-
-INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, uint32_t tid) {
-  int32_t remote[1000];
-  int32_t *local = *(int32_t **)reduce_data;
-  for (uint32_t mask = WARPSIZE / 2; mask > 0; mask /= 2) {
-    for (int32_t i = 0; i < 1000; i++) {
-      local[i] += __kmpc_shuffle_int32(local[i], mask, WARPSIZE);
-    }
+  for(int32_t i = 0; i < N; i++) {
+    reduc_loc[i] = __nvvm_redux_sync_add(local[i], size);
   }
 }
 
-INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data,
-                                                uint32_t size, uint32_t tid) {
-  int32_t remote[1000];
-  int32_t *local = *(int32_t **)reduce_data;
+INLINE static void gpu_master_warp_reduce_v2(int32_t *reduce_data, uint32_t size,
+                                             uint32_t tid) {
+  int32_t *reduce_elem = &reduce_data[tid * N];
 
-  int16_t curr_size;
-  uint32_t mask;
-  curr_size = size;
-  mask = curr_size / 2;
-  while (mask > 0) {
-    for (int32_t i = 0; i < 1000; i++) {
-      local[i] += __kmpc_shuffle_int64(local[i], mask, size);
-    }
-
-    curr_size = (curr_size + 1) / 2;
-    mask = curr_size / 2;
+  for(int32_t i = 0; i < N; i++) {
+    reduc_data[i] = __nvvm_redux_sync_add(reduce_elem[i], size);
   }
-}
+} 
 
 INLINE static void gpu_regular_warp_reduce(void *reduce_data,
                                            kmp_ShuffleReductFctPtr shflFct) {
@@ -137,17 +124,30 @@ static int32_t nvptx_parallel_reduce_nowait(
   uint32_t WarpsNeeded = (NumThreads + WARPSIZE - 1) / WARPSIZE;
   uint32_t WarpId = BlockThreadId / WARPSIZE;
 
+  // shared reduction heap
+  [[clang::loader_uninitialized]] uint32_t reduce[N * WarpsNeeded];
+  #pragma omp allocate(parallelLevel) allocator(omp_pteam_mem_alloc)
+  // pointer to each warp's segment of the reduction heap
+  uint32_t *reduce_loc = &reduce[WarpId * N];
+
   if ((NumThreads % WARPSIZE == 0) || (WarpId < WarpsNeeded - 1))
-    gpu_regular_warp_reduce_v2(reduce_data, GetThreadIdInBlock() % WARPSIZE);
+    gpu_regular_warp_reduce_v2(reduce_data, reduc_loc,
+                               GetThreadIdInBlock() % WARPSIZE);
   else if (NumThreads > 1) // Only SPMD execution mode comes thru this case.
-    gpu_irregular_warp_reduce_v2(reduce_data,
+    gpu_irregular_warp_reduce_v2(reduce_data, reduc_loc,
                                  /*LaneCount=*/NumThreads % WARPSIZE,
                                  GetThreadIdInBlock() % WARPSIZE);
 
-  if (NumThreads > WARPSIZE && WarpId == 0)
-    gpu_irregular_warp_reduce_v2(reduce_data,
-                                 WarpsNeeded,
-                                 BlockThreadId);
+  if (NumThreads > WARPSIZE && WarpId == 0) {
+    gpu_master_warp_reduce_v2(reduce, WarpsNeeded, BlockThreadId);
+    
+    // The thread that returns 1 contains the result of the reduction. 
+    // Unlike other impl, this alg does not write the result back to
+    // this thread implicitly. This function writes the result of the
+    // reduction to the proper location.
+    if (BlockThreadId == 0)
+      cpyReduceData(reduce_data, reduce);
+  }
   return BlockThreadId == 0;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
   uint32_t WarpsNeeded = (NumThreads + WARPSIZE - 1) / WARPSIZE;
