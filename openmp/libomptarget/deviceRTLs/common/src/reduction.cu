@@ -36,16 +36,16 @@ INLINE static void gpu_regular_warp_reduce_v2(void *reduce_data, int32_t *reduce
   int32_t *local = *(int32_t **)reduce_data;
 
   for(int32_t i = 0; i < N; i++) {
-    reduc_loc[i] = __nvvm_redux_sync_add(local[i], size);
+    reduce_loc[i] = __nvvm_redux_sync_add(local[i], 0xFF);
   }
 }
 
-INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data, int32_t *reduc_loc,
+INLINE static void gpu_irregular_warp_reduce_v2(void *reduce_data, int32_t *reduce_loc,
                                                 uint32_t size, uint32_t tid) {
   int32_t *local = *(int32_t **)reduce_data;
 
   for(int32_t i = 0; i < N; i++) {
-    reduc_loc[i] = __nvvm_redux_sync_add(local[i], size);
+    reduce_loc[i] = __nvvm_redux_sync_add(local[i], size);
   }
 }
 
@@ -54,7 +54,7 @@ INLINE static void gpu_master_warp_reduce_v2(int32_t *reduce_data, uint32_t size
   int32_t *reduce_elem = &reduce_data[tid * N];
 
   for(int32_t i = 0; i < N; i++) {
-    reduc_data[i] = __nvvm_redux_sync_add(reduce_elem[i], size);
+    reduce_data[i] = __nvvm_redux_sync_add(reduce_elem[i], size);
   }
 } 
 
